@@ -1,48 +1,42 @@
 """Tests for monitoring and metrics."""
 
 import pytest
-from src.visawise.utils.monitoring import PrometheusMetrics
 
 
-@pytest.fixture
-def metrics():
-    """Create a metrics instance."""
-    return PrometheusMetrics()
+def test_prometheus_metrics_imports():
+    """Test that PrometheusMetrics can be imported and initialized."""
+    from src.visawise.utils.monitoring import setup_metrics, get_metrics
+    
+    # Setup should work
+    metrics = setup_metrics()
+    assert metrics is not None
+    
+    # Get should return the same instance
+    metrics2 = get_metrics()
+    assert metrics2 is metrics
 
 
-def test_record_query(metrics):
-    """Test recording a query."""
+def test_record_operations():
+    """Test recording various operations."""
+    from src.visawise.utils.monitoring import get_metrics
+    
+    metrics = get_metrics()
+    
+    # These should not raise exceptions
     metrics.record_query("langgraph", "success", 1.5)
-    # No assertion, just ensure no exception
-
-
-def test_record_case_check(metrics):
-    """Test recording a case check."""
     metrics.record_case_check("success", 0.5)
-    # No assertion, just ensure no exception
-
-
-def test_record_error(metrics):
-    """Test recording an error."""
     metrics.record_error("query_processing")
-    # No assertion, just ensure no exception
-
-
-def test_set_active_sessions(metrics):
-    """Test setting active sessions."""
     metrics.set_active_sessions(10)
-    # No assertion, just ensure no exception
-
-
-def test_set_cache_size(metrics):
-    """Test setting cache size."""
     metrics.set_cache_size(100)
-    # No assertion, just ensure no exception
 
 
-def test_get_metrics(metrics):
-    """Test getting metrics."""
+def test_get_metrics_output():
+    """Test that metrics can be exported."""
+    from src.visawise.utils.monitoring import get_metrics
+    
+    metrics = get_metrics()
     metrics.record_query("langgraph", "success", 1.0)
+    
     result = metrics.get_metrics()
     assert isinstance(result, bytes)
     assert b"visawise" in result
