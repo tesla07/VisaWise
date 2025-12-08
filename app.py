@@ -673,18 +673,6 @@ def render_sidebar():
         </div>
         """, unsafe_allow_html=True)
         
-        # Stats
-        if hasattr(st.session_state, 'chatbot') and st.session_state.chatbot_ready:
-            st.markdown("### 📈 Session Stats")
-            st.markdown(f"""
-            <div class="sidebar-section">
-                <p style="margin: 0; font-size: 0.85rem;">
-                    💬 Messages: {len(st.session_state.messages)}<br>
-                    🧠 Memory: {len(st.session_state.chatbot.memory)} turns
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-        
         st.markdown("---")
         
         # Sample questions
