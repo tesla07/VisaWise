@@ -549,12 +549,64 @@ Focus on exact topic match - e.g., if query asks about "EB-1", documents about "
                     
                     answer = f"{answer}\n{self.DISCLAIMER}"
                     
+                    # Update memory
+                    if self.memory:
+                        self.memory.add_user_message(query)
+                        self.memory.add_assistant_message(answer)
+                    
                     return ChatResponse(
                         answer=answer,
                         citations=[c.citation for c in chunks],
                         sources=chunks,
-                        evaluation=None  # Skip evaluation for speed in UI
+                        evaluation=None
                     )
+                
+                def chat_stream(self, query):
+                    """Chat with streaming response for real-time display."""
+                    # First, retrieve chunks (non-streaming)
+                    chunks = self._retrieve(query)
+                    
+                    if not chunks:
+                        yield {"type": "complete", "answer": f"I couldn't find relevant information.\n{self.DISCLAIMER}", "chunks": []}
+                        return
+                    
+                    context = self._build_context(chunks)
+                    
+                    messages = [
+                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
+                    ]
+                    
+                    # Stream the LLM response
+                    stream = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=0.3,
+                        max_tokens=1000,
+                        stream=True
+                    )
+                    
+                    full_answer = ""
+                    for chunk in stream:
+                        if chunk.choices[0].delta.content:
+                            token = chunk.choices[0].delta.content
+                            full_answer += token
+                            yield {"type": "token", "content": token}
+                    
+                    # Clean up disclaimer if LLM added one
+                    if "DISCLAIMER" in full_answer.upper():
+                        for marker in ["⚠️ **IMPORTANT DISCLAIMER**", "**DISCLAIMER**", "DISCLAIMER:"]:
+                            if marker in full_answer:
+                                full_answer = full_answer.split(marker)[0].strip()
+                    
+                    full_answer = f"{full_answer}\n{self.DISCLAIMER}"
+                    
+                    # Update memory
+                    if self.memory:
+                        self.memory.add_user_message(query)
+                        self.memory.add_assistant_message(full_answer)
+                    
+                    yield {"type": "complete", "answer": full_answer, "chunks": chunks}
                 
                 def clear_memory(self):
                     self.memory.clear()
@@ -771,32 +823,44 @@ def main():
         # Display user message
         render_chat_message('user', query)
         
-        # Generate response
-        with st.spinner("🔍 Searching USCIS knowledge base..."):
-            try:
-                response = st.session_state.chatbot.chat(
-                    query,
-                    evaluate=st.session_state.show_evaluation
-                )
+        # Generate streaming response
+        try:
+            with st.chat_message("assistant", avatar="🛂"):
+                # Show searching status
+                status = st.empty()
+                status.markdown("🔍 *Searching USCIS knowledge base...*")
                 
-                # Add assistant message
-                st.session_state.messages.append({
-                    'role': 'assistant',
-                    'content': response.answer,
-                    'sources': response.sources,
-                    'evaluation': response.evaluation
-                })
+                # Stream the response
+                response_placeholder = st.empty()
+                streamed_text = ""
+                chunks = []
                 
-                # Display assistant message
-                render_chat_message(
-                    'assistant',
-                    response.answer,
-                    response.sources,
-                    response.evaluation
-                )
+                for event in st.session_state.chatbot.chat_stream(query):
+                    if event["type"] == "token":
+                        streamed_text += event["content"]
+                        status.empty()  # Clear the searching status
+                        response_placeholder.markdown(streamed_text + "▌")
+                    elif event["type"] == "complete":
+                        streamed_text = event["answer"]
+                        chunks = event["chunks"]
                 
-            except Exception as e:
-                st.error(f"Error generating response: {str(e)}")
+                # Final render without cursor
+                response_placeholder.markdown(streamed_text)
+                
+                # Show sources
+                if chunks:
+                    render_sources(chunks)
+            
+            # Add to session state
+            st.session_state.messages.append({
+                'role': 'assistant',
+                'content': streamed_text,
+                'sources': chunks,
+                'evaluation': None
+            })
+                
+        except Exception as e:
+            st.error(f"Error generating response: {str(e)}")
         
         st.rerun()
 
