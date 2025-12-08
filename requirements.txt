@@ -1,0 +1,19 @@
+requests>=2.31.0
+beautifulsoup4>=4.12.2
+lxml>=4.9.3
+python-dateutil>=2.8.2
+
+# Vector DB & Embeddings
+qdrant-client>=1.7.0
+openai>=1.0.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
+
+# RAG Evaluation
+deepeval>=1.0.0
+
+# Reranking
+sentence-transformers>=2.2.0
+
+# Web UI
+streamlit>=1.28.0

@@ -1,0 +1,48 @@
+# Environment and secrets
+.env
+.env.example
+.streamlit/secrets.toml
+
+# Local database (using Qdrant Cloud for deployment)
+qdrant_db/
+qdrant_db_old/
+
+# DeepEval cache
+.deepeval/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+pip
+
+# Data files (too large for GitHub, stored separately)
+data/
+scraped_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Test files
+relevance_check.txt
