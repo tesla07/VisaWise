@@ -386,6 +386,50 @@ Do NOT add disclaimers - system adds them automatically."""
                     
                     return list(set(normalized))
                 
+                def _expand_query(self, query):
+                    """Expand query using conversation context to make it self-contained."""
+                    # Check if query needs expansion (has pronouns or is short follow-up)
+                    needs_expansion_indicators = [
+                        "that", "this", "it", "its", "they", "them", "those", "these",
+                        "the one", "same", "other", "previous", "before", "above",
+                        "what about", "how about", "tell me more", "explain more"
+                    ]
+                    
+                    query_lower = query.lower()
+                    needs_expansion = any(ind in query_lower for ind in needs_expansion_indicators) or len(query.split()) < 5
+                    
+                    if not needs_expansion or not self.memory or len(self.memory) == 0:
+                        return query
+                    
+                    try:
+                        # Get recent conversation for context
+                        history = self.memory.get_context_for_llm()
+                        
+                        expansion_prompt = """Rewrite the user's query to be self-contained and specific based on conversation history.
+
+Examples:
+- History: "What are H-1B requirements?" -> Query: "What about the fees?" -> Rewritten: "What are the H-1B visa fees?"
+- History: "Explain EB-2 NIW" -> Query: "Is it faster?" -> Rewritten: "Is EB-2 NIW processing faster than other categories?"
+- History: "Tell me about F-1 OPT" -> Query: "How long does it last?" -> Rewritten: "How long does F-1 OPT last?"
+
+Return ONLY the rewritten query, nothing else."""
+
+                        response = self.client.chat.completions.create(
+                            model=self.model,
+                            messages=[
+                                {"role": "system", "content": expansion_prompt},
+                                {"role": "user", "content": f"Conversation:\n{history}\n\nCurrent query: {query}\n\nRewritten query:"}
+                            ],
+                            temperature=0.1,
+                            max_tokens=100
+                        )
+                        
+                        expanded = response.choices[0].message.content.strip()
+                        return expanded if expanded else query
+                        
+                    except Exception:
+                        return query
+                
                 def _rerank_with_llm(self, query, chunks, top_n=5):
                     """Re-rank retrieved chunks using LLM to improve relevance."""
                     if not chunks or len(chunks) <= top_n:
@@ -522,7 +566,9 @@ Focus on exact topic match - e.g., if query asks about "EB-1", documents about "
                     return "\n---\n".join(parts)
                 
                 def chat(self, query, evaluate=False):
-                    chunks = self._retrieve(query)
+                    # Expand query using conversation context
+                    expanded_query = self._expand_query(query)
+                    chunks = self._retrieve(expanded_query)
                     
                     if not chunks:
                         return ChatResponse(
@@ -578,8 +624,11 @@ Focus on exact topic match - e.g., if query asks about "EB-1", documents about "
                 
                 def chat_stream(self, query):
                     """Chat with streaming response for real-time display."""
-                    # First, retrieve chunks (non-streaming)
-                    chunks = self._retrieve(query)
+                    # Expand query using conversation context
+                    expanded_query = self._expand_query(query)
+                    
+                    # Retrieve chunks using expanded query
+                    chunks = self._retrieve(expanded_query)
                     
                     if not chunks:
                         yield {"type": "complete", "answer": f"I couldn't find relevant information.\n{self.DISCLAIMER}", "chunks": []}
