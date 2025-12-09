@@ -231,6 +231,16 @@ def init_chatbot():
                 DEEPEVAL_AVAILABLE
             )
             
+            # Cross-encoder for reranking (faster and more accurate than LLM)
+            CROSS_ENCODER_AVAILABLE = False
+            cross_encoder_model = None
+            try:
+                from sentence_transformers import CrossEncoder
+                cross_encoder_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+                CROSS_ENCODER_AVAILABLE = True
+            except ImportError:
+                pass  # Will fall back to LLM-based reranking
+            
             # Configuration
             qdrant_url = os.getenv("QDRANT_URL", "")
             qdrant_api_key = os.getenv("QDRANT_API_KEY", "")
@@ -342,6 +352,7 @@ Do NOT add disclaimers - system adds them automatically."""
                     self.top_k = 10  # Increased for better coverage with reranking
                     self.memory = ConversationMemory(max_turns=10)
                     self.use_rerank = True
+                    self.cross_encoder = cross_encoder_model if CROSS_ENCODER_AVAILABLE else None
                 
                 def _embed_query(self, query):
                     response = self.client.embeddings.create(
@@ -388,43 +399,47 @@ Do NOT add disclaimers - system adds them automatically."""
                 
                 def _expand_query(self, query):
                     """Expand query using conversation context to make it self-contained."""
-                    # Check if query needs expansion (has pronouns or is short follow-up)
-                    needs_expansion_indicators = [
-                        "that", "this", "it", "its", "they", "them", "those", "these",
-                        "the one", "same", "other", "previous", "before", "above",
-                        "what about", "how about", "tell me more", "explain more"
-                    ]
-                    
-                    query_lower = query.lower()
-                    needs_expansion = any(ind in query_lower for ind in needs_expansion_indicators) or len(query.split()) < 5
-                    
-                    if not needs_expansion or not self.memory or len(self.memory) == 0:
+                    # Always try to expand if we have memory - be aggressive about context
+                    if not self.memory or len(self.memory) == 0:
                         return query
+                    
+                    # Check if query is already specific (contains visa category keywords)
+                    visa_keywords = ['h-1b', 'h1b', 'eb-1', 'eb-2', 'eb-3', 'f-1', 'f1', 'opt', 'green card', 
+                                   'naturalization', 'i-140', 'i-485', 'l-1', 'o-1', 'tn', 'perm', 'niw']
+                    if any(kw in query.lower() for kw in visa_keywords):
+                        return query  # Already specific, no expansion needed
                     
                     try:
                         # Get recent conversation for context
                         history = self.memory.get_context_for_llm()
                         
-                        expansion_prompt = """Rewrite the user's query to be self-contained and specific based on conversation history.
+                        expansion_prompt = """You are a query expansion assistant. Your job is to make follow-up questions specific by adding context from the conversation.
+
+CRITICAL: You MUST include the specific visa type or topic from the conversation history in the rewritten query.
 
 Examples:
-- History: "What are H-1B requirements?" -> Query: "What about the fees?" -> Rewritten: "What are the H-1B visa fees?"
-- History: "Explain EB-2 NIW" -> Query: "Is it faster?" -> Rewritten: "Is EB-2 NIW processing faster than other categories?"
-- History: "Tell me about F-1 OPT" -> Query: "How long does it last?" -> Rewritten: "How long does F-1 OPT last?"
+- History: "What are H-1B requirements?" -> Query: "What about the fees?" -> Rewritten: "What are the H-1B visa filing fees and costs?"
+- History: "What are H-1B requirements?" -> Query: "How long does it take?" -> Rewritten: "What is the H-1B visa processing time?"
+- History: "Explain EB-2 NIW" -> Query: "Is it faster?" -> Rewritten: "Is EB-2 NIW processing faster than regular PERM?"
+- History: "Tell me about F-1 OPT" -> Query: "Can I work?" -> Rewritten: "Can I work on F-1 OPT and what are the employment rules?"
+- History: "How does H-1B cap work?" -> Query: "What if I'm not selected?" -> Rewritten: "What happens if I am not selected in the H-1B lottery?"
 
+The rewritten query MUST include the specific visa category (H-1B, F-1, EB-2, etc.) from the conversation.
 Return ONLY the rewritten query, nothing else."""
 
                         response = self.client.chat.completions.create(
                             model=self.model,
                             messages=[
                                 {"role": "system", "content": expansion_prompt},
-                                {"role": "user", "content": f"Conversation:\n{history}\n\nCurrent query: {query}\n\nRewritten query:"}
+                                {"role": "user", "content": f"Conversation history:\n{history}\n\nCurrent query: {query}\n\nRewritten query:"}
                             ],
                             temperature=0.1,
-                            max_tokens=100
+                            max_tokens=150
                         )
                         
                         expanded = response.choices[0].message.content.strip()
+                        # Remove quotes if the model wrapped the response
+                        expanded = expanded.strip('"\'')
                         return expanded if expanded else query
                         
                     except Exception:
@@ -475,6 +490,33 @@ Focus on exact topic match - e.g., if query asks about "EB-1", documents about "
                         
                     except Exception as e:
                         return chunks[:top_n]
+                
+                def _rerank_with_cross_encoder(self, query, chunks, top_n=5):
+                    """Re-rank retrieved chunks using cross-encoder model (faster & more accurate)."""
+                    if not chunks or len(chunks) <= top_n:
+                        return chunks
+                    
+                    if self.cross_encoder is None:
+                        return self._rerank_with_llm(query, chunks, top_n)
+                    
+                    try:
+                        # Create query-document pairs for scoring
+                        pairs = [[query, chunk.text] for chunk in chunks]
+                        
+                        # Get relevance scores from cross-encoder
+                        scores = self.cross_encoder.predict(pairs)
+                        
+                        # Attach scores to chunks
+                        for chunk, score in zip(chunks, scores):
+                            chunk.rerank_score = float(score)
+                        
+                        # Sort by cross-encoder score (descending)
+                        reranked = sorted(chunks, key=lambda x: x.rerank_score, reverse=True)
+                        return reranked[:top_n]
+                        
+                    except Exception as e:
+                        # Fall back to LLM reranking if cross-encoder fails
+                        return self._rerank_with_llm(query, chunks, top_n)
                 
                 def _retrieve(self, query):
                     """Retrieve with keyword-aware multi-term retrieval for comparison queries."""
@@ -529,7 +571,7 @@ Focus on exact topic match - e.g., if query asks about "EB-1", documents about "
                         # If we got chunks for multiple keywords, rerank and return
                         if len(all_chunks) >= self.top_k:
                             if self.use_rerank:
-                                return self._rerank_with_llm(query, all_chunks, self.top_k)
+                                return self._rerank_with_cross_encoder(query, all_chunks, self.top_k)
                             return sorted(all_chunks, key=lambda x: x.score, reverse=True)[:self.top_k]
                     
                     # Fallback: standard vector search (for single-topic or when multi failed)
@@ -555,7 +597,7 @@ Focus on exact topic match - e.g., if query asks about "EB-1", documents about "
                         chunks.append(chunk)
                     
                     if self.use_rerank and keywords:
-                        return self._rerank_with_llm(query, chunks, self.top_k)
+                        return self._rerank_with_cross_encoder(query, chunks, self.top_k)
                     
                     return chunks[:self.top_k]
                 
