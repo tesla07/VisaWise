@@ -533,10 +533,19 @@ Focus on exact topic match - e.g., if query asks about "EB-1", documents about "
                     
                     context = self._build_context(chunks)
                     
-                    messages = [
-                        {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
-                    ]
+                    # Build messages with conversation history
+                    messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+                    
+                    # Add conversation history for context
+                    if self.memory and len(self.memory) > 0:
+                        history_messages = self.memory.get_messages_for_openai()
+                        messages.extend(history_messages)
+                    
+                    # Add current query with context
+                    messages.append({
+                        "role": "user", 
+                        "content": f"Context from USCIS knowledge base:\n{context}\n\nQuestion: {query}"
+                    })
                     
                     response = self.client.chat.completions.create(
                         model=self.model,
@@ -578,10 +587,19 @@ Focus on exact topic match - e.g., if query asks about "EB-1", documents about "
                     
                     context = self._build_context(chunks)
                     
-                    messages = [
-                        {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
-                    ]
+                    # Build messages with conversation history
+                    messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+                    
+                    # Add conversation history for context
+                    if self.memory and len(self.memory) > 0:
+                        history_messages = self.memory.get_messages_for_openai()
+                        messages.extend(history_messages)
+                    
+                    # Add current query with context
+                    messages.append({
+                        "role": "user", 
+                        "content": f"Context from USCIS knowledge base:\n{context}\n\nQuestion: {query}"
+                    })
                     
                     # Stream the LLM response
                     stream = self.client.chat.completions.create(
@@ -648,17 +666,20 @@ def render_disclaimer():
     """, unsafe_allow_html=True)
 
 
+def clear_conversation():
+    """Callback to clear conversation."""
+    st.session_state.messages = []
+    if hasattr(st.session_state, 'chatbot') and st.session_state.chatbot:
+        st.session_state.chatbot.clear_memory()
+
+
 def render_sidebar():
     """Render the sidebar with settings and info."""
     with st.sidebar:
         st.markdown("### ⚙️ Settings")
         
-        # Clear conversation
-        if st.button("🗑️ Clear Conversation", use_container_width=True):
-            st.session_state.messages = []
-            if hasattr(st.session_state, 'chatbot'):
-                st.session_state.chatbot.clear_memory()
-            st.rerun()
+        # Clear conversation with callback
+        st.button("🗑️ Clear Conversation", use_container_width=True, on_click=clear_conversation)
         
         st.markdown("---")
         
