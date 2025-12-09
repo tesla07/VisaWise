@@ -238,8 +238,10 @@ def init_chatbot():
                 from sentence_transformers import CrossEncoder
                 cross_encoder_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
                 CROSS_ENCODER_AVAILABLE = True
-            except ImportError:
-                pass  # Will fall back to LLM-based reranking
+            except (ImportError, Exception) as e:
+                # Fall back to LLM-based reranking if cross-encoder fails to load
+                CROSS_ENCODER_AVAILABLE = False
+                cross_encoder_model = None
             
             # Configuration
             qdrant_url = os.getenv("QDRANT_URL", "")
@@ -397,53 +399,64 @@ Do NOT add disclaimers - system adds them automatically."""
                     
                     return list(set(normalized))
                 
+                def _extract_topic_from_history(self):
+                    """Extract the main visa/immigration topic from recent conversation."""
+                    if not self.memory or len(self.memory) == 0:
+                        return None
+                    
+                    # Get recent user messages
+                    recent_user_msgs = [t.content for t in self.memory.history if t.role == "user"]
+                    if not recent_user_msgs:
+                        return None
+                    
+                    # Visa patterns to look for
+                    visa_patterns = {
+                        'F-1': [r'\bf-?1\b', r'\bf1\b', r'\bstudent visa\b', r'\bstudent status\b'],
+                        'H-1B': [r'\bh-?1b\b', r'\bh1b\b'],
+                        'EB-1': [r'\beb-?1\b'],
+                        'EB-2': [r'\beb-?2\b', r'\bniw\b'],
+                        'EB-3': [r'\beb-?3\b'],
+                        'EB-5': [r'\beb-?5\b'],
+                        'L-1': [r'\bl-?1\b'],
+                        'O-1': [r'\bo-?1\b'],
+                        'OPT': [r'\bopt\b', r'\bstem opt\b', r'\boptional practical training\b'],
+                        'Green Card': [r'\bgreen card\b', r'\bpermanent resident\b', r'\bi-?485\b'],
+                        'Naturalization': [r'\bnaturalization\b', r'\bcitizenship\b'],
+                        'H-4': [r'\bh-?4\b'],
+                        'TN': [r'\btn visa\b', r'\btn\b'],
+                        'J-1': [r'\bj-?1\b', r'\bexchange visitor\b'],
+                    }
+                    
+                    # Search from most recent to oldest (last 3 user messages)
+                    for msg in reversed(recent_user_msgs[-3:]):
+                        msg_lower = msg.lower()
+                        for topic, patterns in visa_patterns.items():
+                            for pattern in patterns:
+                                if re.search(pattern, msg_lower):
+                                    return topic
+                    return None
+                
                 def _expand_query(self, query):
-                    """Expand query using conversation context to make it self-contained."""
-                    # Always try to expand if we have memory - be aggressive about context
+                    """Expand query using conversation context - DETERMINISTIC approach."""
                     if not self.memory or len(self.memory) == 0:
                         return query
                     
                     # Check if query is already specific (contains visa category keywords)
                     visa_keywords = ['h-1b', 'h1b', 'eb-1', 'eb-2', 'eb-3', 'f-1', 'f1', 'opt', 'green card', 
-                                   'naturalization', 'i-140', 'i-485', 'l-1', 'o-1', 'tn', 'perm', 'niw']
+                                   'naturalization', 'i-140', 'i-485', 'l-1', 'o-1', 'tn', 'perm', 'niw', 'j-1']
                     if any(kw in query.lower() for kw in visa_keywords):
                         return query  # Already specific, no expansion needed
                     
-                    try:
-                        # Get recent conversation for context
-                        history = self.memory.get_context_for_llm()
-                        
-                        expansion_prompt = """You are a query expansion assistant. Your job is to make follow-up questions specific by adding context from the conversation.
-
-CRITICAL: You MUST include the specific visa type or topic from the conversation history in the rewritten query.
-
-Examples:
-- History: "What are H-1B requirements?" -> Query: "What about the fees?" -> Rewritten: "What are the H-1B visa filing fees and costs?"
-- History: "What are H-1B requirements?" -> Query: "How long does it take?" -> Rewritten: "What is the H-1B visa processing time?"
-- History: "Explain EB-2 NIW" -> Query: "Is it faster?" -> Rewritten: "Is EB-2 NIW processing faster than regular PERM?"
-- History: "Tell me about F-1 OPT" -> Query: "Can I work?" -> Rewritten: "Can I work on F-1 OPT and what are the employment rules?"
-- History: "How does H-1B cap work?" -> Query: "What if I'm not selected?" -> Rewritten: "What happens if I am not selected in the H-1B lottery?"
-
-The rewritten query MUST include the specific visa category (H-1B, F-1, EB-2, etc.) from the conversation.
-Return ONLY the rewritten query, nothing else."""
-
-                        response = self.client.chat.completions.create(
-                            model=self.model,
-                            messages=[
-                                {"role": "system", "content": expansion_prompt},
-                                {"role": "user", "content": f"Conversation history:\n{history}\n\nCurrent query: {query}\n\nRewritten query:"}
-                            ],
-                            temperature=0.1,
-                            max_tokens=150
-                        )
-                        
-                        expanded = response.choices[0].message.content.strip()
-                        # Remove quotes if the model wrapped the response
-                        expanded = expanded.strip('"\'')
-                        return expanded if expanded else query
-                        
-                    except Exception:
-                        return query
+                    # DETERMINISTIC: Extract topic from conversation history
+                    topic = self._extract_topic_from_history()
+                    
+                    if topic:
+                        # Prepend topic to make query specific
+                        expanded = f"{topic} visa {query}"
+                        return expanded
+                    
+                    # No topic found, return original query
+                    return query
                 
                 def _rerank_with_llm(self, query, chunks, top_n=5):
                     """Re-rank retrieved chunks using LLM to improve relevance."""
